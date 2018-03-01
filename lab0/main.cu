@@ -1,46 +1,125 @@
-#include <cstdio>
-#include <cstdlib>
-#include "SyncedMemory.h"
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+#include<string>
+#include <stdio.h>
 
-#define CHECK {\
-	auto e = cudaDeviceSynchronize();\
-	if (e != cudaSuccess) {\
-		printf("At " __FILE__ ":%d, %s\n", __LINE__, cudaGetErrorString(e));\
-		abort();\
-	}\
+
+struct Screen_Rect{
+	int width, height;
+};
+
+cudaError_t ThesholdWithCuda(Screen_Rect header, unsigned char**binData, const char *iconData);
+
+__device__ unsigned char GetBoundaryValue(int width, int height, int x, int y){
+
+	if (x >= width-1&&y >= height-1){
+		//字串結束
+		return '\0';
+	}
+	else if (x >= width - 1){
+		//行結束
+		return '\n';
+	}
+	else{
+		//其他
+		return ':';
+	}
 }
-
-const int W = 40;
-const int H = 12;
-
-__global__ void Draw(char *frame) {
-	// TODO: draw more complex things here
-	// Do not just submit the original file provided by the TA!
-	const int y = blockIdx.y * blockDim.y + threadIdx.y;
-	const int x = blockIdx.x * blockDim.x + threadIdx.x;
-	if (y < H and x < W) {
-		char c;
-		if (x == W-1) {
-			c = y == H-1 ? '\0' : '\n';
-		} else if (y == 0 or y == H-1 or x == 0 or x == W-2) {
-			c = ':';
-		} else {
-			c = ' ';
-		}
-		frame[y*W+x] = c;
+__device__ bool isBoundary(int width,int height,int x,int y){
+	return x <= 0 || y <= 0 || x >= width-2 || y >= height-1;
+}
+__global__ void ThesholdKernel(int blocks, int iconWidth,  char *iconData, unsigned char *binData, int binData_width, int binData_height)
+{
+	int binX = blockIdx.x;
+	int binY = threadIdx.x;
+	if (binX + binY*blocks >= binData_width*binData_height){
+		printf("thread Discard\n");
+		return;
+	}
+	int dataX = binX - 1;
+	int dataY = binY - 1;
+	int pixelOffset = (dataX + dataY*iconWidth);
+	if (isBoundary(binData_width, binData_height, binX, binY)){
+		binData[binX + binY*blocks] = GetBoundaryValue(binData_width, binData_height, binX, binY);
+	}
+	else{
+		binData[binX + binY*blocks] = iconData[pixelOffset];
 	}
 }
 
-int main(int argc, char **argv)
-{
-	MemoryBuffer<char> frame(W*H);
-	auto frame_smem = frame.CreateSync(W*H);
-	CHECK;
+int main()
+{   
+	Screen_Rect nvdiaIconSize;
+	nvdiaIconSize.width = 64;
+	nvdiaIconSize.height = 32;
+	const char *iconData = "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          *************************                                               ************                                      *****                  *****                                *****     *******                **                           ****                ****                                      ****     ****            ****                                 ****     ***    *******       ****                             ****    ****     ***** ****       ***    **                    ****    ****      ****     ***        ***                      *****      ***     *         ***                                   ****       ****         ***                                        ****            *****        ***                                   *****     ***           ****                                         ****           ********                                              ********************                                            ***********************                                                                                                                                                                                                                                                                                                                                                                                                               ";
+	unsigned char *binData = NULL;
+	cudaError_t cudaStatus = ThesholdWithCuda(nvdiaIconSize, &binData, iconData);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!");
+		return 1;
+	}
+	cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "ThesholdWithCuda failed!");
+		return 1;
+	}
+	printf("%s\n", binData);
+	free(binData);
+    return 0;
+}
 
-	Draw<<<dim3((W-1)/16+1,(H-1)/12+1), dim3(16,12)>>>(frame_smem.get_gpu_wo());
-	CHECK;
-
-	puts(frame_smem.get_cpu_ro());
-	CHECK;
-	return 0;
+cudaError_t ThesholdWithCuda(Screen_Rect header, unsigned char**binData, const char *iconData){
+	char* Device_IconData;
+	unsigned char* Device_binData;
+	unsigned char* Host_binData;
+	int iconPixels = header.width*header.height;
+	int iconDataLength =iconPixels;
+	int binPixels = (header.width+3)*(header.height+2);
+	cudaError_t cudaStatus;
+	cudaStatus = cudaSetDevice(0);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+		goto Error;
+	}
+	cudaStatus = cudaMalloc((void**)&Device_IconData, iconDataLength * sizeof(unsigned char));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMalloc((void**)&Device_binData, binPixels * sizeof(unsigned char));
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed!");
+		goto Error;
+	}
+	cudaStatus = cudaMemcpy(Device_IconData, iconData, iconDataLength * sizeof(char), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	//+2/+3 for boundary
+	int nblock = header.width + 3;
+	int nthread = header.height + 2;
+	ThesholdKernel << <nblock, nthread >> >(nblock, header.width, Device_IconData, Device_binData, (header.width + 3), (header.height + 2));
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "ThesholdKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		goto Error;
+	}
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching ThesholdKernel!\n", cudaStatus);
+		goto Error;
+	}
+	Host_binData = new unsigned char[binPixels];
+	cudaStatus = cudaMemcpy(Host_binData, Device_binData, binPixels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed!");
+		goto Error;
+	}
+	*binData = Host_binData;
+Error:
+	cudaFree(Device_binData);
+	cudaFree(Device_IconData);
+	return cudaStatus;
 }
