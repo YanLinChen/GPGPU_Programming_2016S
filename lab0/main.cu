@@ -80,22 +80,18 @@ cudaError_t ThesholdWithCuda(Screen_Rect header, unsigned char**binData, const c
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-		goto Error;
 	}
 	cudaStatus = cudaMalloc((void**)&Device_IconData, iconDataLength * sizeof(unsigned char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
 	}
 	cudaStatus = cudaMalloc((void**)&Device_binData, binPixels * sizeof(unsigned char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
-		goto Error;
 	}
 	cudaStatus = cudaMemcpy(Device_IconData, iconData, iconDataLength * sizeof(char), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
-		goto Error;
 	}
 	//+2/+3 for boundary
 	int nblock = header.width + 3;
@@ -104,21 +100,17 @@ cudaError_t ThesholdWithCuda(Screen_Rect header, unsigned char**binData, const c
 	cudaStatus = cudaGetLastError();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "ThesholdKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		goto Error;
 	}
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching ThesholdKernel!\n", cudaStatus);
-		goto Error;
 	}
 	Host_binData = new unsigned char[binPixels];
 	cudaStatus = cudaMemcpy(Host_binData, Device_binData, binPixels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
-		goto Error;
 	}
 	*binData = Host_binData;
-Error:
 	cudaFree(Device_binData);
 	cudaFree(Device_IconData);
 	return cudaStatus;
