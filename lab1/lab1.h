@@ -11,6 +11,7 @@ struct Lab1VideoInfo {
 class Lab1VideoGenerator {
 	struct Impl;
 	unique_ptr<Impl> impl;
+	float2 min, max, len;
 public:
 	Lab1VideoGenerator();
 	~Lab1VideoGenerator();
